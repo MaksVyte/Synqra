@@ -1,57 +1,42 @@
-# ⚡ Synqra
+# ⚡ Synqra Server
 
-> Real-time multi-user live collaboration, note syncing, and Excalidraw whiteboards for Obsidian via a self-hosted relay server.
+> High-performance real-time collaboration & sync server for the **Synqra** Obsidian plugin.
 
 ---
 
 ## ✨ Features
 
-- **Live Concurrent Editing**: Real-time multi-cursor collaboration powered by high-performance Yjs CRDTs (Rust backend).
-- **Excalidraw Whiteboard Sync**: Draw simultaneously with peers on `.excalidraw` and `.excalidraw.md` canvases at 30+ FPS.
-- **Server Password Protection**: Only authorized users with your host password can connect.
-- **Admin Room Controls**: Server admins can create, view, and delete isolated collaboration rooms directly inside Obsidian settings. Typo room creation by regular users is strictly prevented.
+- **Live Concurrent Editing**: Real-time multi-cursor collaboration powered by high-performance Rust Yjs CRDTs.
+- **Excalidraw Whiteboard Sync**: Smooth, low-latency drawing synchronization on `.excalidraw` and `.excalidraw.md` canvases at 30+ FPS.
+- **Server Password Protection**: Only users with your server password can connect to sync notes and files.
+- **Admin Room Controls**: Server admins can create, view, and delete isolated collaboration rooms directly from the Obsidian plugin settings. Typo room creation by regular users is strictly prevented.
 - **Conflict-Free Vault Sync**: Authoritative server architecture ensures zero text collisions or desynchronization.
-- **Self-Hosted & Private**: Complete control over your data. Runs on any VPS, Proxmox LXC, Raspberry Pi, or local server.
+- **Self-Hosted & Private**: 100% control over your data. Runs on any VPS, Proxmox LXC, Raspberry Pi, or local server.
 
 ---
 
-## 🚀 Server Deployment (Self-Hosting)
+## 🚀 Server Deployment (Portainer)
 
-You can host your own Synqra relay server in under a minute using Docker or Portainer.
+Deploy your Synqra server in under a minute directly through Portainer:
 
-### Method 1: Portainer (1-Click via Git Repository)
-
-1. In **Portainer**, navigate to **Stacks** → Click **+ Add stack**.
-2. Name your stack: `synqra`.
-3. Select **Repository** as the build method.
-4. Fill in the repository details:
-   - **Repository URL**: `https://github.com/YOUR_USERNAME/Synqra` (or your repository URL)
+1. Open **Portainer** → Select your environment → Navigate to **Stacks**.
+2. Click **+ Add stack**.
+3. Name your stack: `synqra`.
+4. Select **Repository** as the build method.
+5. Enter the repository details:
+   - **Repository URL**: `https://github.com/MaksVyte/Synqra` (or your repository URL)
    - **Repository reference**: `refs/heads/main`
-   - **Compose path**: `server/docker-compose.yml`
-5. Under **Environment variables**, configure your passwords:
-   - `SERVER_PASSWORD`: `your_secure_server_password` (password given to friends/collaborators)
-   - `ADMIN_PASSWORD`: `your_secure_admin_password` (password used in plugin to create/delete rooms)
-6. Click **Deploy the stack**. Portainer will clone the repository, build the container, and launch the server automatically.
+   - **Compose path**: `docker-compose.yml`
+6. Under **Environment variables**, click **+ add environment variable** to set your passwords:
+   - `SERVER_PASSWORD` = `your_chosen_server_password` *(password you give to users/collaborators)*
+   - `ADMIN_PASSWORD` = `your_chosen_admin_password` *(password for room creation & management)*
+7. Click **Deploy the stack**. 
+
+Portainer will clone the repository, build the Rust container, and launch the server with persistent storage on port `5612`.
 
 ---
 
-### Method 2: Docker Compose CLI (Linux / Proxmox LXC / VPS)
-
-```bash
-# 1. Clone the repository
-git clone https://github.com/YOUR_USERNAME/Synqra.git
-cd Synqra/server
-
-# 2. Build and launch the container in the background
-docker compose up -d --build
-
-# 3. Verify server is running and healthy
-curl http://127.0.0.1:5612/health
-```
-
----
-
-## ⚙️ Server Configuration
+## ⚙️ Environment Variables Reference
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
@@ -63,39 +48,19 @@ curl http://127.0.0.1:5612/health
 
 ---
 
-## 📱 Installing the Obsidian Plugin
+## 📱 Obsidian Plugin Setup
 
-### Method A: Using BRAT (Recommended for Beta Testing)
-1. Install the **BRAT** (Beta Reviewers Auto-update Tester) plugin from Obsidian Community Plugins.
-2. In Obsidian **Settings** → **BRAT** → Click **Add Beta plugin**.
-3. Paste your GitHub repository URL: `https://github.com/YOUR_USERNAME/Synqra`.
-4. Enable **Synqra** under Community Plugins.
-
-### Method B: Manual Installation
-1. Download the three release files: `main.js`, `manifest.json`, and `styles.css` from the repository (`client/obsidian-sample-plugin/`).
-2. Inside your Obsidian vault folder, create a new folder:
-   `.obsidian/plugins/synqra/`
-3. Copy `main.js`, `manifest.json`, and `styles.css` into that folder.
-4. In Obsidian **Settings** → **Community Plugins**, toggle on **Synqra**.
-
----
-
-## 🔒 Connecting to Your Server
-
-1. Open Obsidian **Settings** → **Synqra - Live Collaboration**.
-2. Enter your **Server URL**: `ws://<your-server-ip>:5612` (or `wss://collab.yourdomain.com`).
-3. Enter the **Server Password** provided by the server host.
-4. Enter the **Room ID** you want to join (e.g. `vault-a`).
-5. Choose your **Display Name** and **Cursor Color**.
+1. Install the **Synqra** plugin in Obsidian (from Community Plugins or your plugin manager).
+2. Open Obsidian **Settings** → **Synqra - Live Collaboration**.
+3. Enter your **Server URL**: `ws://<your-server-ip>:5612` (or `wss://collab.yourdomain.com`).
+4. Enter the **Server Password** provided by the server host.
+5. Enter the **Room ID** (e.g. `vault-a`).
+6. Set your **Display Name** and **Cursor Color**.
 
 ### 🛠️ Admin Room Controls:
-1. Scroll down to **Server Admin Controls** in the plugin settings.
+1. In the plugin settings, scroll down to **Server Admin Controls**.
 2. Enter your `ADMIN_PASSWORD` and click **Unlock Admin Panel**.
-3. You can now:
-   - **View Live Rooms**: Check real-time connected users and active document counts.
-   - **Create New Rooms**: Enter a Room ID (e.g. `work-vault`) to initialize a new room on the server.
-   - **Switch Rooms**: Switch your active vault connection with 1-click.
-   - **Delete Rooms**: Permanently remove unused rooms and clean up server storage.
+3. You can now create new collaboration rooms, view active rooms and online peers, or delete unused rooms.
 
 ---
 
