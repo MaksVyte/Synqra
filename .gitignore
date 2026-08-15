@@ -1,0 +1,20 @@
+# Version control & OS artifacts
+.DS_Store
+Thumbs.db
+*.log
+.env
+rustup-init.exe
+
+# Backups folder
+backups/
+
+# Client dependencies & build artifacts
+client/obsidian-sample-plugin/node_modules/
+client/obsidian-sample-plugin/.husky/
+
+# Server build & runtime data
+server/target/
+server/data/
+server/test_data/
+**/data/*.yjs
+**/data/rooms.json

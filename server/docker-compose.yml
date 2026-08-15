@@ -1,0 +1,29 @@
+services:
+  synqra-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: synqra-server:latest
+    container_name: synqra-server
+    restart: unless-stopped
+    ports:
+      # Host LXC port 5612 -> container's configured PORT (also 5612).
+      - "5612:5612"
+    environment:
+      HOST: 0.0.0.0
+      PORT: "5612"
+      DATA_DIR: /data
+      SERVER_PASSWORD: "changethispassword"
+      ADMIN_PASSWORD: "adminchangethispassword"
+    volumes:
+      # Persist the authoritative room vaults across container restarts.
+      - synqra-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:5612/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  synqra-data:

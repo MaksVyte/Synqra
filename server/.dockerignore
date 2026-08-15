@@ -1,0 +1,16 @@
+# Windows-only toolchain pin — the LXC host builds with Linux's default stable toolchain.
+rust-toolchain.toml
+
+# Local build artifacts — rebuilt inside the container.
+target
+
+# VCS / editor cruft.
+.git
+.gitignore
+.vscode
+.idea
+*.swp
+*.swo
+
+# Docs live on the host; not needed in the build context.
+DEPLOY.md
