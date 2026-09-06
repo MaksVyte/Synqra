@@ -762,6 +762,7 @@ dependencies = [
  "axum",
  "base64",
  "futures-util",
+ "percent-encoding",
  "serde",
  "serde_json",
  "tokio",

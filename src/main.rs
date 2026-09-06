@@ -107,7 +107,37 @@ async fn main() {
         .unwrap_or_else(|e| panic!("failed to bind to {addr}: {e}"));
 
     info!("synqra-server listening on http://{addr}");
-    axum::serve(listener, app).await.expect("server error");
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .expect("server error");
+    info!("synqra-server shutdown gracefully");
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        if let Ok(mut sig) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            sig.recv().await;
+        } else {
+            std::future::pending::<()>().await;
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+    tracing::info!("Shutdown signal received, draining connections...");
 }
 
 fn env_var(key: &str, default: &str) -> String {
@@ -264,7 +294,8 @@ async fn file_download_handler(
             .into_response();
     }
 
-    if let Some(bytes) = state.load_binary_file(&room_id, &file_path) {
+    let decoded_path = percent_encoding::percent_decode_str(&file_path).decode_utf8_lossy();
+    if let Some(bytes) = state.load_binary_file(&room_id, &decoded_path) {
         (
             axum::http::StatusCode::OK,
             [("content-type", "application/octet-stream")],
@@ -281,6 +312,17 @@ async fn file_download_handler(
     }
 }
 
+fn encode_mux_update(doc_id: &str, update_bytes: &[u8]) -> Vec<u8> {
+    let mut inner = Vec::new();
+    write_var_uint(&mut inner, YJS_SYNC_UPDATE);
+    write_var_u8array(&mut inner, update_bytes);
+    let mut frame = Vec::new();
+    write_var_string(&mut frame, doc_id);
+    write_var_uint(&mut frame, MUX_SYNC);
+    write_var_u8array(&mut frame, &inner);
+    frame
+}
+
 async fn process_control_file_op(state: &AppState, room_id: &str, text: &str) {
     use base64::Engine;
     if let Ok(val) = serde_json::from_str::<serde_json::Value>(text) {
@@ -290,13 +332,21 @@ async fn process_control_file_op(state: &AppState, room_id: &str, text: &str) {
                 match op_type {
                     "create" | "modify" => {
                         let is_binary = op.get("binary").and_then(|v| v.as_bool()).unwrap_or(false);
-                        if is_binary {
-                            if let (Some(path), Some(content)) = (
-                                op.get("path").and_then(|v| v.as_str()),
-                                op.get("content").and_then(|v| v.as_str()),
-                            ) {
+                        if let (Some(path), Some(content)) = (
+                            op.get("path").and_then(|v| v.as_str()),
+                            op.get("content").and_then(|v| v.as_str()),
+                        ) {
+                            if is_binary {
                                 if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(content) {
                                     state.save_binary_file(room_id, path, &bytes);
+                                }
+                            } else {
+                                state.save_binary_file(room_id, path, content.as_bytes());
+                                let update = state.update_text_doc(room_id, path, content).await;
+                                if !update.is_empty() {
+                                    let frame = encode_mux_update(path, &update);
+                                    let full_id = format!("{room_id}:{path}");
+                                    state.send_to_subscribers(&full_id, frame).await;
                                 }
                             }
                         }
@@ -323,19 +373,32 @@ async fn process_control_file_op(state: &AppState, room_id: &str, text: &str) {
                         let path = op.get("path").and_then(|v| v.as_str()).unwrap_or("");
                         let binary = op.get("binary").and_then(|v| v.as_bool()).unwrap_or(false);
                         let transfer_id = op.get("transferId").and_then(|v| v.as_str()).unwrap_or(path);
-                        state.start_chunk(transfer_id, path, binary).await;
+                        let total_size = op.get("totalSize").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                        const MAX_CHUNK_TRANSFER_SIZE: usize = 70 * 1024 * 1024;
+                        if total_size > 0 && total_size <= MAX_CHUNK_TRANSFER_SIZE {
+                            let scoped_key = format!("{room_id}:{transfer_id}");
+                            state.start_chunk(&scoped_key, path, binary, total_size).await;
+                        }
                     }
                     "chunk-data" => {
                         let path = op.get("path").and_then(|v| v.as_str()).unwrap_or("");
                         let transfer_id = op.get("transferId").and_then(|v| v.as_str()).unwrap_or(path);
                         let index = op.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
                         let data = op.get("data").and_then(|v| v.as_str()).unwrap_or("");
-                        state.add_chunk(transfer_id, index, data.to_string()).await;
+                        let scoped_key = format!("{room_id}:{transfer_id}");
+                        state.add_chunk(&scoped_key, index, data.to_string()).await;
                     }
                     "chunk-end" => {
                         let path = op.get("path").and_then(|v| v.as_str()).unwrap_or("");
                         let transfer_id = op.get("transferId").and_then(|v| v.as_str()).unwrap_or(path);
-                        state.finish_chunk(room_id, transfer_id).await;
+                        let scoped_key = format!("{room_id}:{transfer_id}");
+                        if let Some((path, binary, update)) = state.finish_chunk(room_id, &scoped_key).await {
+                            if !binary && !update.is_empty() {
+                                let frame = encode_mux_update(&path, &update);
+                                let full_id = format!("{room_id}:{path}");
+                                state.send_to_subscribers(&full_id, frame).await;
+                            }
+                        }
                     }
                     _ => {}
                 }
@@ -359,7 +422,7 @@ async fn handle_control_socket(
 
     state.register_control_client(&room_id, client_key, tx).await;
 
-    let writer = tokio::spawn(async move {
+    let mut writer = tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
             if sender.send(Message::Text(msg.into())).await.is_err() {
                 break;
@@ -367,16 +430,42 @@ async fn handle_control_socket(
         }
     });
 
-    while let Some(msg) = receiver.next().await {
-        match msg {
-            Ok(Message::Text(text)) => {
-                process_control_file_op(&state, &room_id, &text).await;
-                state.broadcast_control_msg(&room_id, client_key, text.to_string()).await;
+    tokio::select! {
+        _ = &mut writer => {}
+        _ = async {
+            loop {
+                let msg = match tokio::time::timeout(std::time::Duration::from_secs(75), receiver.next()).await {
+                    Ok(Some(msg)) => msg,
+                    Ok(None) => break,
+                    Err(_) => {
+                        warn!("control socket timed out client={client_key} room={room_id}");
+                        break;
+                    }
+                };
+
+                match msg {
+                    Ok(Message::Text(text)) => {
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
+                            if let Some(msg_type) = val.get("type").and_then(|v| v.as_str()) {
+                                if msg_type == "ping" {
+                                    state.send_control_to(&room_id, client_key, r#"{"type":"pong"}"#.to_string()).await;
+                                    continue;
+                                } else if msg_type == "pong" {
+                                    // Heartbeat response, do not broadcast
+                                    continue;
+                                }
+                            }
+                        }
+                        process_control_file_op(&state, &room_id, &text).await;
+                        state.broadcast_control_msg(&room_id, client_key, text.to_string()).await;
+                    }
+                    Ok(Message::Close(_)) => break,
+                    Ok(Message::Ping(_)) => {}
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
             }
-            Ok(Message::Close(_)) => break,
-            Ok(_) => {}
-            Err(_) => break,
-        }
+        } => {}
     }
 
     state.unregister_control_client(&room_id, client_key).await;
@@ -432,7 +521,7 @@ async fn handle_socket(
 
     state.register_connection(client_key, tx).await;
 
-    let writer = tokio::spawn(async move {
+    let mut writer = tokio::spawn(async move {
         let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
         heartbeat.tick().await;
         loop {
@@ -456,50 +545,61 @@ async fn handle_socket(
         }
     });
 
-    loop {
-        match receiver.next().await {
-            Some(Ok(Message::Binary(bytes))) => {
-                if let Err(e) = handle_frame(&state, &base_room, client_key, &bytes).await {
-                    warn!("protocol error client={client_key}: {e}");
-                    break;
+    tokio::select! {
+        _ = &mut writer => {}
+        _ = async {
+            loop {
+                let msg = match tokio::time::timeout(std::time::Duration::from_secs(75), receiver.next()).await {
+                    Ok(Some(msg)) => msg,
+                    Ok(None) => break,
+                    Err(_) => {
+                        warn!("client timed out client={client_key} room={base_room}");
+                        break;
+                    }
+                };
+
+                match msg {
+                    Ok(Message::Binary(bytes)) => {
+                        if let Err(e) = handle_frame(&state, &base_room, client_key, &bytes).await {
+                            warn!("protocol error client={client_key}: {e}");
+                            break;
+                        }
+                    }
+                    Ok(Message::Close(_)) => break,
+                    Ok(Message::Ping(_)) => {}
+                    Ok(_) => {}
+                    Err(_) => break,
                 }
             }
-            Some(Ok(Message::Close(_))) => break,
-            Some(Ok(Message::Ping(_))) => {}
-            Some(Ok(_)) => {}
-            Some(Err(_)) => break,
-            None => break,
-        }
+        } => {}
     }
 
-    let all_awareness = state.take_all_awareness_client_ids(client_key).await;
-    for (full_id, client_ids) in all_awareness {
-        if !client_ids.is_empty() {
+    let all_removals = state.cleanup_connection(client_key).await;
+    for (full_id, client_clocks) in all_removals {
+        if !client_clocks.is_empty() {
             let doc_id = full_id.split_once(':').map(|(_, d)| d).unwrap_or(&full_id);
-            broadcast_awareness_removal_ids(&state, &full_id, doc_id, &client_ids).await;
+            broadcast_awareness_removal(&state, &full_id, doc_id, &client_clocks).await;
         }
     }
 
-    state.cleanup_awareness_payloads(client_key).await;
-    state.unregister_connection(client_key).await;
     writer.abort();
     info!("client left session={base_room} client={client_key}");
 }
 
-async fn broadcast_awareness_removal_ids(
+async fn broadcast_awareness_removal(
     state: &AppState,
     full_id: &str,
     doc_id: &str,
-    client_ids: &[u32],
+    client_clocks: &[(u32, u32)],
 ) {
-    if client_ids.is_empty() {
+    if client_clocks.is_empty() {
         return;
     }
     let mut removal_payload = Vec::new();
-    write_var_uint(&mut removal_payload, client_ids.len() as u32);
-    for id in client_ids {
+    write_var_uint(&mut removal_payload, client_clocks.len() as u32);
+    for (id, clock) in client_clocks {
         write_var_uint(&mut removal_payload, *id);
-        write_var_uint(&mut removal_payload, u32::MAX);
+        write_var_uint(&mut removal_payload, clock.saturating_add(1));
         write_var_string(&mut removal_payload, "null");
     }
     let mut frame = Vec::new();
@@ -578,10 +678,10 @@ async fn handle_frame(
             Ok(())
         }
         MUX_UNSUBSCRIBE => {
-            state.unsubscribe(&full_id, client_key).await;
-            let client_ids = state.take_awareness_client_ids(client_key, &full_id).await;
-            if !client_ids.is_empty() {
-                broadcast_awareness_removal_ids(state, &full_id, doc_id, &client_ids).await;
+            state.unsubscribe_doc(&full_id, client_key).await;
+            let client_clocks = state.take_awareness_client_clocks(client_key, &full_id).await;
+            if !client_clocks.is_empty() {
+                broadcast_awareness_removal(state, &full_id, doc_id, &client_clocks).await;
             }
             Ok(())
         }
@@ -594,7 +694,13 @@ async fn handle_frame(
                     let client_sv =
                         StateVector::decode_v1(sv_bytes).map_err(|e| format!("bad sv: {e}"))?;
 
-                    let doc = state.get_doc(&full_id).await.ok_or("doc not loaded")?;
+                    let doc = match state.get_doc(&full_id).await {
+                        Some(d) => d,
+                        None => {
+                            let (d, _) = state.subscribe(&full_id, client_key).await;
+                            d
+                        }
+                    };
                     let doc_guard = doc.lock().await;
                     let diff = doc_guard.diff_since(&client_sv);
                     let sv = doc_guard.state_vector_v1();
@@ -644,8 +750,8 @@ async fn handle_frame(
             if let Some(len) = read_var_uint(payload, &mut p) {
                 for _ in 0..len {
                     if let Some(client_id) = read_var_uint(payload, &mut p) {
-                        state.add_awareness_client_id(client_key, &full_id, client_id).await;
-                        let _ = read_var_uint(payload, &mut p); // clock
+                        let clock = read_var_uint(payload, &mut p).unwrap_or(0);
+                        state.record_awareness_client_clock(client_key, &full_id, client_id, clock).await;
                         let _ = read_var_str(payload, &mut p); // state
                     }
                 }

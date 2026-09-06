@@ -15,6 +15,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 base64 = "0.22"
 uuid = { version = "1", features = ["v4", "serde"] }
 yrs = "0.18"
+percent-encoding = "2.3"
 
 [dev-dependencies]
 tokio-test = "0.4"
