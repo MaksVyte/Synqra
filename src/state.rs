@@ -8,7 +8,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
-use yrs::{Doc, ReadTxn, StateVector, Text, Transact, Update};
+use yrs::{Doc, GetString, ReadTxn, StateVector, Text, Transact, Update};
 
 /// The authoritative Yjs document for one vault file (fully-qualified id is
 /// `{baseRoom}:{docId}`), persisted to disk as a Yjs v1 full-state update.
@@ -649,6 +649,7 @@ impl AppState {
     }
 
     /// Unregister a connection's outbound channel.
+    #[allow(dead_code)]
     pub async fn unregister_connection(&self, key: u64) {
         let mut conns = self.connections.lock().await;
         conns.remove(&key);
@@ -839,6 +840,7 @@ impl AppState {
     }
 
     /// Clean up awareness payloads when a client disconnects.
+    #[allow(dead_code)]
     pub async fn cleanup_awareness_payloads(&self, client_key: u64) {
         let mut map = self.client_awareness_payloads.lock().await;
         for doc_map in map.values_mut() {
