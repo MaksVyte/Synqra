@@ -94,6 +94,8 @@ async fn main() {
         .route("/ws-mux/{room_id}", get(ws_handler))
         .route("/ws-control/{room_id}", get(ws_control_handler))
         .route("/file/{room_id}/{*file_path}", get(file_download_handler))
+        // Client REST API
+        .route("/api/rooms", get(client_list_rooms))
         // Admin REST API
         .route("/api/admin/verify", post(admin_verify))
         .route("/api/admin/rooms", get(admin_list_rooms).post(admin_create_room))
@@ -167,6 +169,22 @@ fn extract_admin_token(
     query.get("adminPassword").or_else(|| query.get("password")).cloned().unwrap_or_default()
 }
 
+fn extract_server_token(
+    headers: &axum::http::HeaderMap,
+    query: &HashMap<String, String>,
+) -> String {
+    if let Some(auth_header) = headers.get("authorization").and_then(|h| h.to_str().ok()) {
+        if let Some(token) = auth_header.strip_prefix("Bearer ") {
+            return token.trim().to_string();
+        }
+        return auth_header.trim().to_string();
+    }
+    if let Some(pass) = headers.get("x-server-password").and_then(|h| h.to_str().ok()) {
+        return pass.trim().to_string();
+    }
+    query.get("password").or_else(|| query.get("serverPassword")).cloned().unwrap_or_default()
+}
+
 async fn health() -> impl IntoResponse {
     Json(json!({
         "status": "ok",
@@ -193,6 +211,20 @@ async fn admin_verify(
     } else {
         (axum::http::StatusCode::UNAUTHORIZED, Json(json!({ "error": "Invalid admin password", "authenticated": false }))).into_response()
     }
+}
+
+async fn client_list_rooms(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    let pass = extract_server_token(&headers, &query);
+    if !state.verify_server_auth(&pass) {
+        return (axum::http::StatusCode::UNAUTHORIZED, Json(json!({ "error": "Unauthorized" }))).into_response();
+    }
+
+    let rooms = state.list_rooms().await;
+    (axum::http::StatusCode::OK, Json(json!({ "rooms": rooms }))).into_response()
 }
 
 async fn admin_list_rooms(
